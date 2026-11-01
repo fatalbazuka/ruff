@@ -1,7 +1,7 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::Stmt;
 use ruff_python_ast::identifier::Identifier;
 use ruff_python_ast::statement_visitor::{StatementVisitor, walk_stmt};
+use ruff_python_ast::{Stmt, StmtFunctionDef, StmtKind};
 
 use crate::codes::Category;
 use crate::{Violation, checkers::ast::Checker};
@@ -69,54 +69,58 @@ impl Violation for TooManyReturnStatements {
     }
 }
 
-/// Count the number of return statements in a function or method body.
-fn num_returns(body: &[Stmt]) -> usize {
-    struct ReturnCounter(usize);
-
-    impl<'a> StatementVisitor<'a> for ReturnCounter {
-        fn visit_stmt(&mut self, stmt: &'a Stmt) {
-            match stmt {
-                Stmt::Return(_) => self.0 += 1,
-                Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
-                _ => walk_stmt(self, stmt),
-            }
-        }
-    }
-
-    let mut counter = ReturnCounter(0);
-    counter.visit_body(body);
-    counter.0
-}
-
 /// PLR0911
 pub(crate) fn too_many_return_statements(
     checker: &Checker,
-    stmt: &Stmt,
-    body: &[Stmt],
+    function: StmtFunctionDef<'_>,
     max_returns: usize,
 ) {
-    let returns = num_returns(body);
+    let returns = count_returns(function);
     if returns > max_returns {
         checker.report_diagnostic(
             TooManyReturnStatements {
                 returns,
                 max_returns,
             },
-            stmt.identifier(),
+            function.identifier(),
         );
     }
 }
 
+fn count_returns(function: StmtFunctionDef<'_>) -> usize {
+    struct ReturnCounter(usize);
+
+    impl<'a> StatementVisitor<'a> for ReturnCounter {
+        fn visit_stmt(&mut self, stmt: Stmt<'a>) {
+            match stmt.classify() {
+                StmtKind::Return(_) => self.0 += 1,
+                StmtKind::FunctionDef(_) | StmtKind::ClassDef(_) => {}
+                _ => walk_stmt(self, stmt),
+            }
+        }
+    }
+
+    let mut counter = ReturnCounter(0);
+    counter.visit_body(function.body());
+    counter.0
+}
+
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use ruff_python_parser::parse_module;
+    use ruff_python_trivia::textwrap::indent;
 
-    use super::num_returns;
+    use super::count_returns;
 
     fn test_helper(source: &str, expected: usize) -> Result<()> {
-        let parsed = parse_module(source)?;
-        assert_eq!(num_returns(parsed.suite()), expected);
+        let parsed = parse_module(&format!("async def f():\n{}", indent(source, "    ")))?;
+        let function = parsed
+            .suite()
+            .first()
+            .and_then(ruff_python_ast::Stmt::as_function_def_stmt)
+            .context("expected a function")?;
+        assert_eq!(count_returns(function), expected);
         Ok(())
     }
 
