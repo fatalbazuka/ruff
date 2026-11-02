@@ -90,7 +90,13 @@ impl<'a> SequenceIndexVisitor<'a> {
     }
 
     pub(crate) fn into_accesses(self) -> Vec<TextRange> {
-        self.accesses
+        // A read before a write in source order can run again after the write, for example in
+        // a `while` condition. Discard earlier reads too when the replacement is invalidated.
+        if self.modified {
+            Vec::new()
+        } else {
+            self.accesses
+        }
     }
 }
 
